@@ -1,0 +1,21 @@
+name: Basic JSON Drift Test
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run validator
+        id: validate
+        uses: ./../json-drift-validator
+        with:
+          baseline_json: '{"a":1,"b":{"c":2}}'
+          compare_json:  '{"a":1,"b":{"c":3}}'
+          critical_keys: "b.c"
+
+      - name: Fail on drift
+        if: steps.validate.outputs.critical_fail == '1'
+        run: exit 1

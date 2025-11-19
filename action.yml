@@ -1,0 +1,170 @@
+name: "JSON Drift Validator"
+description: "Flatten JSON, compare values, and detect configuration drift using critical/medium/ignore severity rules with wildcard path matching."
+author: "Avatar New York"
+
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  baseline_json:
+    description: "Baseline JSON string (usually stored in a GitHub Secret)"
+    required: true
+
+  compare_json:
+    description: "JSON string to compare against baseline"
+    required: true
+
+  critical_keys:
+    description: "Comma-separated list of key patterns for critical drift (deployment should fail). Supports wildcards."
+    required: false
+    default: ""
+
+  medium_keys:
+    description: "Comma-separated list of key patterns for medium drift (warn only). Supports wildcards."
+    required: false
+    default: ""
+
+  ignore_keys:
+    description: "Comma-separated list of key patterns to ignore. Highest precedence. Supports wildcards."
+    required: false
+    default: ""
+
+outputs:
+  critical_fail:
+    description: "1 if critical drift is detected, otherwise 0."
+  medium_warn:
+    description: "1 if medium drift is detected, otherwise 0."
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Install jq
+      shell: bash
+      run: |
+        if ! command -v jq >/dev/null 2>&1; then
+          sudo apt-get update && sudo apt-get install -y jq
+        fi
+
+    - name: Write JSON input to files
+      shell: bash
+      run: |
+        echo "${{ inputs.baseline_json }}" > baseline.json
+        echo "${{ inputs.compare_json }}" > compare.json
+
+    - name: Flatten baseline JSON
+      shell: bash
+      run: |
+        jq -r '
+          paths(scalars) as $p |
+          [
+            ($p | map(
+              if type == "number"
+                then "[\(.|tostring)]"
+              else tostring end
+            ) | join(".")),
+            (getpath($p) | tostring)
+          ] | @tsv
+        ' baseline.json > baseline_flat.txt
+
+    - name: Flatten comparison JSON
+      shell: bash
+      run: |
+        jq -r '
+          paths(scalars) as $p |
+          [
+            ($p | map(
+              if type == "number"
+                then "[\(.|tostring)]"
+              else tostring end
+            ) | join(".")),
+            (getpath($p) | tostring)
+          ] | @tsv
+        ' compare.json > compare_flat.txt
+
+    - name: Process key pattern inputs
+      id: patterns
+      shell: bash
+      run: |
+        echo "${{ inputs.critical_keys }}" | tr ',' '\n' | sed '/^\s*$/d' > critical_patterns.txt
+        echo "${{ inputs.medium_keys }}"   | tr ',' '\n' | sed '/^\s*$/d' > medium_patterns.txt
+        echo "${{ inputs.ignore_keys }}"   | tr ',' '\n' | sed '/^\s*$/d' > ignore_patterns.txt
+
+    - name: Compare flattened key-value pairs
+      id: compare
+      shell: bash
+      run: |
+        FAIL=0
+        WARN=0
+
+        echo "### JSON Drift Report" > drift-report.md
+        echo "" >> drift-report.md
+
+        mapfile -t IGNORE_PATTERNS < ignore_patterns.txt
+        mapfile -t CRITICAL_PATTERNS < critical_patterns.txt
+        mapfile -t MEDIUM_PATTERNS < medium_patterns.txt
+
+        wildcard_match() {
+          local KEY="$1"
+          local PAT="$2"
+          local REGEX="^${PAT//\*/.*}$"
+          [[ "$KEY" =~ $REGEX ]]
+        }
+
+        declare -A BASEMAP
+        while IFS=$'\t' read -r KEY VAL; do BASEMAP["$KEY"]="$VAL"; done < baseline_flat.txt
+
+        declare -A CURRENTMAP
+        while IFS=$'\t' read -r KEY VAL; do CURRENTMAP["$KEY"]="$VAL"; done < compare_flat.txt
+
+        ALL_KEYS=$(printf "%s\n" "${!BASEMAP[@]}" "${!CURRENTMAP[@]}" | sort -u)
+
+        for KEY in $ALL_KEYS; do
+          BASEVAL="${BASEMAP[$KEY]}"
+          CURRVAL="${CURRENTMAP[$KEY]}"
+
+          [[ "$BASEVAL" == "$CURRVAL" ]] && continue
+
+          # IGNORE always wins
+          for PAT in "${IGNORE_PATTERNS[@]}"; do
+            wildcard_match "$KEY" "$PAT" && continue 2
+          done
+
+          # CRITICAL
+          for PAT in "${CRITICAL_PATTERNS[@]}"; do
+            if wildcard_match "$KEY" "$PAT"; then
+              echo "❌ Critical: $KEY" >> drift-report.md
+              echo "- Baseline: $BASEVAL" >> drift-report.md
+              echo "- Compare:  $CURRVAL" >> drift-report.md
+              echo "" >> drift-report.md
+              FAIL=1
+              continue 2
+            fi
+          done
+
+          # MEDIUM
+          for PAT in "${MEDIUM_PATTERNS[@]}"; do
+            if wildcard_match "$KEY" "$PAT"; then
+              echo "⚠️ Medium: $KEY" >> drift-report.md
+              echo "- Baseline: $BASEVAL" >> drift-report.md
+              echo "- Compare:  $CURRVAL" >> drift-report.md
+              echo "" >> drift-report.md
+              WARN=1
+              continue 2
+            fi
+          done
+
+          # Otherwise ignored
+          :
+        done
+
+        echo "critical_fail=$FAIL" >> $GITHUB_OUTPUT
+        echo "medium_warn=$WARN"   >> $GITHUB_OUTPUT
+
+    - name: Upload drift report artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: json-drift-report
+        path: drift-report.md

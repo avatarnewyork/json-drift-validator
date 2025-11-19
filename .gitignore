@@ -1,0 +1,14 @@
+# Node
+node_modules/
+npm-debug.log
+
+# JSON inputs from testing
+baseline.json
+compare.json
+*.txt
+
+# macOS
+.DS_Store
+
+# Artifacts
+*.md.html

@@ -1,0 +1,28 @@
+name: WP Rocket Drift
+
+on: [push]
+
+jobs:
+  rocket:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate WP Rocket settings
+        id: validate
+        uses: avatarnewyork/json-drift-validator@v1
+        with:
+          baseline_json: ${{ secrets.WP_ROCKET_BASELINE }}
+          compare_json: ${{ steps.export.outputs.wp_export }}
+
+          critical_keys: >
+            cache_*,
+            minify_*,
+            delay_js_*,
+            lazyload.*,
+            heartbeat.*,
+            cdn.*,
+            database.*
+
+          medium_keys: "version,previous_version"
+          ignore_keys: "secret_*,license,consumer_*"
