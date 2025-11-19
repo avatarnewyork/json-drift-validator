@@ -1,5 +1,5 @@
 name: "JSON Drift Validator"
-description: "Flatten JSON, compare values, and detect configuration drift using critical/medium/ignore severity rules with wildcard path matching."
+description: "Flatten JSON, compare values, and detect configuration drift using critical/medium/ignore severity rules with wildcard path matching. Supports JSON via raw string, file, or base64."
 author: "Avatar New York"
 
 branding:
@@ -7,32 +7,64 @@ branding:
   color: "blue"
 
 inputs:
+  #
+  # Baseline JSON (choose ONE of these)
+  #
   baseline_json:
-    description: "Baseline JSON string (usually stored in a GitHub Secret)"
-    required: true
+    description: "Baseline JSON string (discouraged; may require escaping)."
+    required: false
+    default: ""
 
+  baseline_json_file:
+    description: "Path to a file containing baseline JSON (recommended)."
+    required: false
+    default: ""
+
+  baseline_json_base64:
+    description: "Base64-encoded baseline JSON string."
+    required: false
+    default: ""
+
+  #
+  # Comparison JSON (choose ONE of these)
+  #
   compare_json:
-    description: "JSON string to compare against baseline"
-    required: true
+    description: "JSON string to compare against baseline (discouraged)."
+    required: false
+    default: ""
 
+  compare_json_file:
+    description: "Path to a file containing JSON to compare (recommended)."
+    required: false
+    default: ""
+
+  compare_json_base64:
+    description: "Base64-encoded JSON string to compare."
+    required: false
+    default: ""
+
+  #
+  # Severity keys
+  #
   critical_keys:
-    description: "Comma-separated list of key patterns for critical drift (deployment should fail). Supports wildcards."
+    description: "Comma-separated key patterns for critical drift. Supports wildcards."
     required: false
     default: ""
 
   medium_keys:
-    description: "Comma-separated list of key patterns for medium drift (warn only). Supports wildcards."
+    description: "Comma-separated key patterns for medium drift. Supports wildcards."
     required: false
     default: ""
 
   ignore_keys:
-    description: "Comma-separated list of key patterns to ignore. Highest precedence. Supports wildcards."
+    description: "Comma-separated key patterns to ignore. Highest precedence. Supports wildcards."
     required: false
     default: ""
 
 outputs:
   critical_fail:
     description: "1 if critical drift is detected, otherwise 0."
+
   medium_warn:
     description: "1 if medium drift is detected, otherwise 0."
 
@@ -47,12 +79,46 @@ runs:
           sudo apt-get update && sudo apt-get install -y jq
         fi
 
-    - name: Write JSON input to files
+    #
+    # Resolve BASELINE JSON
+    #
+    - name: Resolve baseline JSON
+      id: baseline
       shell: bash
       run: |
-        echo "${{ inputs.baseline_json }}" > baseline.json
-        echo "${{ inputs.compare_json }}" > compare.json
+        # Priority: file > base64 > raw string
+        if [ -n "${{ inputs.baseline_json_file }}" ]; then
+          cp "${{ inputs.baseline_json_file }}" baseline.json
+        elif [ -n "${{ inputs.baseline_json_base64 }}" ]; then
+          echo "${{ inputs.baseline_json_base64 }}" | base64 -d > baseline.json
+        elif [ -n "${{ inputs.baseline_json }}" ]; then
+          echo "${{ inputs.baseline_json }}" > baseline.json
+        else
+          echo "ERROR: No baseline JSON provided." >&2
+          exit 1
+        fi
 
+    #
+    # Resolve COMPARE JSON
+    #
+    - name: Resolve compare JSON
+      id: comparejson
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.compare_json_file }}" ]; then
+          cp "${{ inputs.compare_json_file }}" compare.json
+        elif [ -n "${{ inputs.compare_json_base64 }}" ]; then
+          echo "${{ inputs.compare_json_base64 }}" | base64 -d > compare.json
+        elif [ -n "${{ inputs.compare_json }}" ]; then
+          echo "${{ inputs.compare_json }}" > compare.json
+        else
+          echo "ERROR: No compare JSON provided." >&2
+          exit 1
+        fi
+
+    #
+    # Flatten JSON files
+    #
     - name: Flatten baseline JSON
       shell: bash
       run: |
@@ -68,7 +134,7 @@ runs:
           ] | @tsv
         ' baseline.json > baseline_flat.txt
 
-    - name: Flatten comparison JSON
+    - name: Flatten compare JSON
       shell: bash
       run: |
         jq -r '
@@ -83,6 +149,9 @@ runs:
           ] | @tsv
         ' compare.json > compare_flat.txt
 
+    #
+    # Build pattern lists
+    #
     - name: Process key pattern inputs
       id: patterns
       shell: bash
@@ -91,6 +160,9 @@ runs:
         echo "${{ inputs.medium_keys }}"   | tr ',' '\n' | sed '/^\s*$/d' > medium_patterns.txt
         echo "${{ inputs.ignore_keys }}"   | tr ',' '\n' | sed '/^\s*$/d' > ignore_patterns.txt
 
+    #
+    # Compare flattened key-values
+    #
     - name: Compare flattened key-value pairs
       id: compare
       shell: bash
@@ -126,7 +198,7 @@ runs:
 
           [[ "$BASEVAL" == "$CURRVAL" ]] && continue
 
-          # IGNORE always wins
+          # IGNORE wins
           for PAT in "${IGNORE_PATTERNS[@]}"; do
             wildcard_match "$KEY" "$PAT" && continue 2
           done
@@ -155,8 +227,6 @@ runs:
             fi
           done
 
-          # Otherwise ignored
-          :
         done
 
         echo "critical_fail=$FAIL" >> $GITHUB_OUTPUT
