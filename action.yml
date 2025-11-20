@@ -86,7 +86,6 @@ runs:
       id: baseline
       shell: bash
       run: |
-        # Priority: file > base64 > raw string
         if [ -n "${{ inputs.baseline_json_file }}" ]; then
           cp "${{ inputs.baseline_json_file }}" baseline.json
         elif [ -n "${{ inputs.baseline_json_base64 }}" ]; then
