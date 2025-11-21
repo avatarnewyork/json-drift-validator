@@ -4,8 +4,8 @@
 
 The action flattens JSON into dot-path key/value pairs (e.g., `dependencies.react`, `settings.cache.mobile`), applies wildcard-based severity rules, and flags configuration drift as:
 
-- **Critical** — fail the workflow
-- **Medium** — warn but continue
+- **Critical** — listed in the report, **counted**, and they now **fail the workflow automatically**
+- **Medium** — listed in the report and counted as warnings
 - **Ignored** — intentionally skipped, takes highest precedence
 
 This action is ideal for:
@@ -29,37 +29,37 @@ It now supports three ways to provide JSON input:
 - **Wildcard pattern matching** for severity rules  
   - Examples: `cache.*`, `database.settings.*`, `resource_changes[*].change.after.*`
 - **Ignore list overrides** critical and medium rules  
-- **Flexible input formats**: File, Base64, Raw JSON
-- **Works with extremely large JSON files**
-- **Generates a Markdown drift report** and uploads as an artifact  
-- **General-purpose drift detection** — not tied to any specific tool  
+- Supports **JSON via file path**, **base64**, or **raw JSON string**
+- Works with large & deeply nested JSON configs
+- **Automatic workflow failure** when critical drift is detected
+- **Readable drift-summary** written to console:
+  ```
+  JSON Drift Summary:
+  Critical drift count: 2
+  Medium drift count:   1
+  ```
+- **Markdown drift report** uploaded as an artifact  
+- Fully general-purpose — works with any JSON-based config
 
 ---
 
 ## 📥 Inputs
 
-### JSON Input Options
-
-You MUST provide **one** baseline JSON input and **one** comparison JSON input.  
-Use either:
+You must provide one baseline JSON input and one comparison JSON input:
 
 ### **1. File-based JSON (recommended)**
-
 | Input | Description |
 |-------|-------------|
-| `baseline_json_file` | Path to a file containing baseline JSON |
-| `compare_json_file` | Path to a file containing comparison JSON |
+| `baseline_json_file` | Path to baseline JSON file |
+| `compare_json_file` | Path to comparison JSON file |
 
 ---
 
 ### **2. Base64 JSON**
-
 | Input | Description |
 |-------|-------------|
 | `baseline_json_base64` | Base64-encoded baseline JSON |
 | `compare_json_base64` | Base64-encoded comparison JSON |
-
-Useful when reading JSON from secrets, artifacts, or encrypted exports.
 
 ---
 
@@ -67,32 +67,32 @@ Useful when reading JSON from secrets, artifacts, or encrypted exports.
 
 | Input | Description |
 |-------|-------------|
-| `baseline_json` | Raw JSON string |
-| `compare_json` | Raw JSON string |
+| `baseline_json` | Raw baseline JSON string |
+| `compare_json` | Raw comparison JSON string |
 
-Raw JSON is fragile due to quoting, newlines, `%` handling, and GitHub’s workflow syntax. Prefer **file** or **base64**.
+Raw JSON is fragile in GitHub workflows due to quotation and newline escaping. Prefer file or base64.
 
 ---
 
 ## 🎯 Severity Rule Inputs
 
-Each input accepts **comma-separated wildcard patterns**.
+Each list accepts **comma-separated wildcard patterns**:
 
 | Input | Purpose |
 |--------|---------|
-| `critical_keys` | Any matched key drift **fails the workflow** |
-| `medium_keys` | Matched drift **warns** |
-| `ignore_keys` | Matched keys are **ignored**, even if also in critical/medium |
+| `critical_keys` | Drift **fails the workflow**, counts as critical |
+| `medium_keys` | Drift **warns**, counts as medium |
+| `ignore_keys` | Drift fully ignored; overrides all other rules |
 
 ### Wildcard Examples
 
 | Pattern | Matches |
 |---------|---------|
-| `cache.*` | `cache.mobile`, `cache.ssl`, `cache.settings.mode` |
-| `database.*` | All keys under `database` |
-| `resource_changes[*].change.after.*` | Any Terraform resource attribute |
-| `**.version` | Any nested `version` key |
-| `metadata.*` | All metadata fields |
+| `cache.*` | `cache.mobile`, `cache.ssl`, etc. |
+| `database.*` | All database settings |
+| `resource_changes[*].change.after.*` | Terraform resource drift |
+| `**.version` | Any version key anywhere |
+| `metadata.*` | Metadata fields |
 
 ---
 
@@ -100,11 +100,12 @@ Each input accepts **comma-separated wildcard patterns**.
 
 | Output | Meaning |
 |--------|---------|
-| `critical_fail` | `"1"` if any critical rule was violated |
-| `medium_warn` | `"1"` if any medium rule was violated |
+| `critical_fail` | Number of critical drift violations |
+| `medium_warn` | Number of medium drift warnings |
 
-A Markdown report is uploaded as artifact:  
-**`json-drift-report/drift-report.md`**
+> **Note:**  
+> Even if the workflow fails due to critical drift,  
+> the drift report artifact is still uploaded.
 
 ---
 
@@ -114,7 +115,7 @@ Below are several complete examples reflecting real-world usage.
 
 ---
 
-# ✅ **Example: Simplest Possible (JSON file inputs)**
+# ✅ Example: Basic File-Based Drift Check
 
 ```yaml
 jobs:
@@ -135,9 +136,11 @@ jobs:
           critical_keys: "a"
 ```
 
+This will fail the workflow because key `a` changed.
+
 ---
 
-# 🟦 **Example: Base64 inputs (recommended for secrets)**
+# 🟦 Example: Base64 Inputs (recommended for secrets)
 
 ```yaml
 - name: Validate drift
@@ -154,7 +157,7 @@ jobs:
 
 ---
 
-# 🟥 **Example: Raw JSON (discouraged but supported)**
+# 🟥 Example: Raw JSON (discouraged but supported)
 
 ```yaml
 - uses: avatarnewyork/json-drift-validator@v2
@@ -166,42 +169,45 @@ jobs:
 
 ---
 
-# 🧩 **Example: WP Rocket Configuration Drift Check**
+# 🧩 WP Rocket Configuration Drift Check
+
+This example uses **base64 input**, **automatic failure** on critical drift, and the updated validator.
 
 ```yaml
-jobs:
-  wprocket:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+- name: Validate WP Rocket Settings
+  id: validate
+  uses: avatarnewyork/json-drift-validator@v2
+  with:
+    baseline_json_base64: ${{ secrets.WP_ROCKET_BASELINE_BASE64 }}
+    compare_json_base64: ${{ env.WP_EXPORT_BASE64 }}
 
-      - name: Decode WP Rocket export to file
-        run: |
-          echo "${{ steps.export.outputs.wp_export_base64 }}" | base64 -d > wp_export.json
+    critical_keys: >
+      cache_*,
+      minify_*,
+      delay_js_*,
+      lazyload.*,
+      heartbeat.*,
+      cdn.*,
+      database.*
 
-      - name: Validate WP Rocket Settings
-        id: validate
-        uses: avatarnewyork/json-drift-validator@v2
-        with:
-          baseline_json_base64: ${{ secrets.WP_ROCKET_BASELINE_B64 }}
-          compare_json_file: wp_export.json
-
-          critical_keys: >
-            cache_*,
-            minify_*,
-            delay_js_*,
-            lazyload.*,
-            heartbeat.*,
-            cdn.*,
-            database.*
-
-          medium_keys: "version,previous_version"
-          ignore_keys: "secret_*,consumer_*,license"
+    medium_keys: "version,previous_version"
+    ignore_keys: "secret_*,consumer_*,license"
 ```
+
+Output example:
+
+```
+JSON Drift Summary:
+Critical drift count: 2
+Medium drift count:   1
+❌ Critical drift detected. Failing the action.
+```
+
+The workflow fails, and `drift-report.md` is uploaded.
 
 ---
 
-# 🌐 **Example: Terraform Drift Detection**
+# 🌐 Terraform Example
 
 ```yaml
 with:
@@ -217,19 +223,17 @@ with:
 
 ## 🔍 How Drift Detection Works
 
-1. JSON is flattened into `key<TAB>value` lines:  
+1. JSON is flattened to key/value TSV lines:
    ```
-   dependencies.react   18.2.0
-   cache.mobile.enable  true
+   cache.mobile         true
+   cache.ssl            false
+   version              2
    ```
-2. Keys are matched against your wildcard rules:
-   - If key matches `ignore_keys` → **ignored**
-   - Else if matches `critical_keys` → **fail**
-   - Else if matches `medium_keys` → **warn**
-   - Else → ignored
-3. Differences appear in `drift-report.md`
-
-Example drift output:
+2. Keys match severity rules:
+   - `ignore_keys` → excluded  
+   - `critical_keys` → counted + fail  
+   - `medium_keys` → counted + warn  
+3. The report lists differences with severity, e.g.:
 
 ```
 ❌ Critical: cache.mobile
@@ -241,11 +245,18 @@ Example drift output:
 - Compare:  1.0.4
 ```
 
+4. Summary appended automatically:
+```
+### Summary
+- Critical drift items: 1
+- Medium drift items:   1
+```
+
 ---
 
 # 🧪 Local Testing
 
-To test flattening:
+Check flattened output:
 
 ```sh
 jq -r '
@@ -257,7 +268,7 @@ jq -r '
 ' file.json
 ```
 
-To simulate workflow locally:
+Test workflow locally:
 
 ```sh
 brew install act
@@ -269,14 +280,14 @@ act -j drift
 # 🤝 Contributing
 
 See `CONTRIBUTING.md`.  
-Pull requests and enhancements are welcome, especially rule presets for tools (WP Rocket, Terraform, package.json, etc.).
+Pull requests and enhancements welcome (profiles for WP Rocket, Terraform, etc.).
 
 ---
 
 # 🛡 Security
 
-Do not include secrets or production configuration in issues or pull requests.  
-See `SECURITY.md` for safe disclosure guidelines.
+Do not share production secrets or configuration in issues.  
+See `SECURITY.md` for private disclosure instructions.
 
 ---
 
