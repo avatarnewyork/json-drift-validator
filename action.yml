@@ -209,7 +209,7 @@ runs:
               echo "- Baseline: $BASEVAL" >> drift-report.md
               echo "- Compare:  $CURRVAL" >> drift-report.md
               echo "" >> drift-report.md
-              FAIL=1
+              FAIL=$((FAIL+1))
               continue 2
             fi
           done
@@ -221,15 +221,38 @@ runs:
               echo "- Baseline: $BASEVAL" >> drift-report.md
               echo "- Compare:  $CURRVAL" >> drift-report.md
               echo "" >> drift-report.md
-              WARN=1
+              WARN=$((WARN+1))
               continue 2
             fi
           done
-
         done
 
+        #
+        # Output summary
+        #
+        echo "" >> drift-report.md
+        echo "### Summary" >> drift-report.md
+        echo "- Critical drift items: $FAIL" >> drift-report.md
+        echo "- Medium drift items:   $WARN" >> drift-report.md
+        echo "" >> drift-report.md
+
+        echo "JSON Drift Summary:"
+        echo "Critical drift count: $FAIL"
+        echo "Medium drift count:   $WARN"
+
+        #
+        # Set outputs
+        #
         echo "critical_fail=$FAIL" >> $GITHUB_OUTPUT
         echo "medium_warn=$WARN"   >> $GITHUB_OUTPUT
+
+        #
+        # Fail the workflow on critical drift
+        #
+        if [ "$FAIL" -gt 0 ]; then
+          echo "❌ Critical drift detected. Failing the action."
+          exit 1
+        fi
 
     - name: Upload drift report artifact
       if: always()
